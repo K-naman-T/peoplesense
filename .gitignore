@@ -1,0 +1,13 @@
+# Environments
+.env.local
+.venv
+env/
+venv/
+.next/
+# Cache
+__pycache__/
+.pytest_cache/
+.cache
+
+# Node.js
+node_modules/
