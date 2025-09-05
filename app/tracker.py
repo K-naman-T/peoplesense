@@ -17,13 +17,14 @@ class LineCounter:
         self.count_in = 0
         self.count_out = 0
         
-    def is_crossing(self, current_point: Tuple[int, int], previous_point: Optional[Tuple[int, int]]) -> Optional[str]:
+    def is_crossing(self, current_point: Tuple[int, int], previous_point: Optional[Tuple[int, int]], 
+                      line_start: Tuple[int, int], line_end: Tuple[int, int]) -> Optional[str]:
         """Determine if a point has crossed the line and in which direction"""
         if previous_point is None:
             return None
             
-        x1, y1 = self.start_point
-        x2, y2 = self.end_point
+        x1, y1 = line_start
+        x2, y2 = line_end
         
         # Current and previous positions
         cx, cy = current_point
@@ -181,7 +182,8 @@ class PeopleTracker:
                 # Create a copy for annotations
                 annotated_frame = frame.copy()
                 
-                # Update current count
+                frame_height, frame_width, _ = annotated_frame.shape # Get frame dimensions
+
                 current_count = 0
                 
                 if results[0].boxes.id is not None:
@@ -213,38 +215,45 @@ class PeopleTracker:
                         
                         # Check line crossings for this object
                         for line_id, line_counter in camera_data["lines"].items():
-                            # Draw the counting line
-                            cv2.line(annotated_frame, line_counter.start_point, line_counter.end_point, (0, 255, 0), 2)
-                            
-                            # Check if this object crossed the line
                             if previous_position:
-                                crossing = line_counter.is_crossing(current_position, previous_position)
+                                # --- FIX: Convert relative line points to absolute pixel coordinates ---
+                                p1_abs = (int(line_counter.start_point[0] * frame_width / 100), int(line_counter.start_point[1] * frame_height / 100))
+                                p2_abs = (int(line_counter.end_point[0] * frame_width / 100), int(line_counter.end_point[1] * frame_height / 100))
+
+                                # Use absolute points for crossing check
+                                crossing = line_counter.is_crossing(current_position, previous_position, p1_abs, p2_abs)
                                 
                                 if crossing == "in" and str_id not in line_counter.counted_ids:
                                     line_counter.count_in += 1
                                     line_counter.counted_ids.add(str_id)
-                                    camera_data["stats"]["people_in"] += 1
                                     
                                 elif crossing == "out" and str_id in line_counter.counted_ids:
                                     line_counter.count_out += 1
                                     line_counter.counted_ids.remove(str_id)
-                                    camera_data["stats"]["people_out"] += 1
                 
-                # Update current count in stats
+                # --- START: NEW DRAWING LOGIC ---
+                # Update total stats
+                total_in = sum(line.count_in for line in camera_data["lines"].values())
+                total_out = sum(line.count_out for line in camera_data["lines"].values())
+                camera_data["stats"]["people_in"] = total_in
+                camera_data["stats"]["people_out"] = total_out
                 camera_data["stats"]["current_count"] = current_count
-                
-                # Display stats on frame
-                for i, (line_id, line) in enumerate(camera_data["lines"].items()):
-                    y_pos = 30 + (i * 60)
-                    cv2.putText(annotated_frame, f'{line.name}:', 
-                               (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                    cv2.putText(annotated_frame, f'In: {line.count_in} | Out: {line.count_out}', 
-                               (10, y_pos + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                
-                # Store the processed frame
+
+                # Draw all counting lines
+                for line_counter in camera_data["lines"].values():
+                    p1_abs = (int(line_counter.start_point[0] * frame_width / 100), int(line_counter.start_point[1] * frame_height / 100))
+                    p2_abs = (int(line_counter.end_point[0] * frame_width / 100), int(line_counter.end_point[1] * frame_height / 100))
+                    cv2.line(annotated_frame, p1_abs, p2_abs, (0, 255, 0), 2)
+
+                # Display total stats on frame
+                cv2.putText(annotated_frame, f'In: {total_in}', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+                cv2.putText(annotated_frame, f'Out: {total_out}', (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+                cv2.putText(annotated_frame, f'In Frame: {current_count}', (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+                # --- END: NEW DRAWING LOGIC ---
+
                 with self.lock:
                     camera_data["last_processed_frame"] = annotated_frame.copy()
                     
             except Exception as e:
                 print(f"Error processing camera {camera_id}: {e}")
-                time.sleep(1)  # Prevent tight loop on errors
+                time.sleep(1)

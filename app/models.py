@@ -1,6 +1,7 @@
-from typing import Dict, List, Optional, Tuple, Union, Any
-from pydantic import BaseModel, Field, field_validator, model_validator
-import uuid
+from pydantic import BaseModel, Field
+from typing import List, Optional, Union
+from uuid import uuid4
+import time
 
 
 class Point(BaseModel):
@@ -8,47 +9,23 @@ class Point(BaseModel):
     y: int
 
 
+# This model seems unused in the current implementation but is fine.
 class LineDefinition(BaseModel):
-    camera_id: str
+    id: str = Field(default_factory=lambda: str(uuid4()))
     points: List[Point]
-    id: Optional[str] = Field(default_factory=lambda: str(uuid.uuid4()))  # Add this line
 
 
 class CameraConfig(BaseModel):
-    id: Optional[str] = Field(default_factory=lambda: str(uuid.uuid4()))
-    camera_id: Optional[str] = None
+    # Use a single, consistent ID field.
+    camera_id: str = Field(default_factory=lambda: str(uuid4()))
     name: str
-    url: Optional[Any] = None  # Backend field
-    stream_url: Optional[Any] = None  # Frontend field
+    # Use a single, clear URL field. It can be a string (RTSP/HTTP) or int (device index).
+    stream_url: Union[str, int]
     enabled: bool = True
-    lines: List[LineDefinition] = []
+    # This is what the CameraTracker uses. It supports one line.
+    line_points: List[Point] = []
 
-    @model_validator(mode='after')
-    def ensure_id_and_url(self):
-        # Ensure either id or camera_id is populated
-        if not self.id and self.camera_id:
-            self.id = self.camera_id
-        elif not self.camera_id and self.id:
-            self.camera_id = self.id
-            
-        # Ensure either url or stream_url is populated
-        if not self.url and self.stream_url is not None:
-            self.url = self.stream_url
-        elif not self.stream_url and self.url is not None:
-            self.stream_url = self.url
-            
-        return self
-
-    @field_validator('url', 'stream_url', mode='before')
-    @classmethod
-    def validate_url(cls, v):
-        # Convert string numbers to integers
-        if isinstance(v, str) and v.isdigit():
-            return int(v)
-        return v
-
-    class Config:
-        populate_by_name = True
+    # The 'lines' field and complex validators are no longer needed.
 
 
 class CameraList(BaseModel):
@@ -57,17 +34,20 @@ class CameraList(BaseModel):
 
 class TrackingStats(BaseModel):
     camera_id: str
+    camera_name: str  # Add name for easier use in the frontend
     people_in: int = 0
     people_out: int = 0
     current_count: int = 0
-    lines: Dict[str, Dict[str, int]] = {}
+    total_tracked: int = 0  # Add a field for total unique tracks
+    last_updated: Optional[str] = None  # Add a timestamp
 
 
+# This model seems unused in the current implementation but is fine.
 class LineCountEvent(BaseModel):
     camera_id: str
     line_id: str
     object_id: str
-    direction: str  # 'in' or 'out'
+    direction: str
     timestamp: float
     position: Point
 

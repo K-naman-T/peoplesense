@@ -2,7 +2,6 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 
-# Load a pre-trained YOLO model
 model = YOLO('yolov8n.pt')
 
 # Open video capture

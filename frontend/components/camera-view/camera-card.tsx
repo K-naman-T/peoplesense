@@ -6,20 +6,32 @@
  */
 import { useState } from 'react';
 import Link from 'next/link';
-import { StreamView } from './stream-view';
-import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
+import { Label } from '@/components/ui/label';
 import { CameraConfig, TrackingStats } from '@/types';
-import camerasApi from '@/lib/api-client/cameras';
+import { StreamView } from '@/components/camera-view/stream-view';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 
 interface CameraCardProps {
   camera: CameraConfig;
-  stats?: TrackingStats;
-  onToggleEnabled?: (cameraId: string, enabled: boolean) => Promise<void>;
+  stats: TrackingStats | null;
+  onToggleEnabled: (cameraId: string, enabled: boolean) => void;
+  onDelete: (cameraId: string) => void; // Add onDelete prop
 }
 
-export function CameraCard({ camera, stats, onToggleEnabled }: CameraCardProps) {
+export function CameraCard({ camera, stats, onToggleEnabled, onDelete }: CameraCardProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -76,7 +88,7 @@ export function CameraCard({ camera, stats, onToggleEnabled }: CameraCardProps) 
           </div>
           <div className="grid gap-1">
             <p className="text-muted-foreground">In Frame</p>
-            <p className="font-semibold">{stats?.people_in_frame || 0}</p>
+            <p className="font-semibold">{stats?.current_count || 0}</p>
           </div>
           <div className="grid gap-1">
             <p className="text-muted-foreground">Total Tracked</p>
@@ -84,7 +96,7 @@ export function CameraCard({ camera, stats, onToggleEnabled }: CameraCardProps) 
           </div>
         </div>
         
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-3 gap-2">
           <Button variant="outline" asChild>
             <Link href={`/cameras/${camera.camera_id}`}>
               View
@@ -95,6 +107,26 @@ export function CameraCard({ camera, stats, onToggleEnabled }: CameraCardProps) 
               Configure
             </Link>
           </Button>
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button variant="destructive">Delete</Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Are you sure?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This action cannot be undone. This will permanently delete the
+                  "{camera.name}" camera and all its configuration.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction onClick={() => onDelete(camera.camera_id)}>
+                  Continue
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </div>
       </CardFooter>
     </Card>

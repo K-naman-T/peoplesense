@@ -15,11 +15,12 @@ export interface CameraConfig {
 // Tracking statistics type
 export interface TrackingStats {
   camera_id: string;
+  camera_name: string; // This should also be in the type
   people_in: number;
   people_out: number;
-  people_in_frame: number;
+  current_count: number; // FIX: Changed from people_in_frame
   total_tracked: number;
-  last_updated: number; // timestamp
+  last_updated: string; // FIX: Changed from number to match backend
 }
 
 // Line definition for counting

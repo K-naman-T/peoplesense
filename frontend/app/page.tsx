@@ -61,13 +61,28 @@ export default function Home() {
     }
   };
 
+  const handleDeleteCamera = async (cameraId: string) => {
+    const success = await camerasApi.deleteCamera(cameraId);
+    if (success) {
+      // Remove the camera and its stats from the local state to update the UI
+      setCameras(prevCameras => prevCameras.filter(c => c.camera_id !== cameraId));
+      setStats(prevStats => {
+        const newStats = { ...prevStats };
+        delete newStats[cameraId];
+        return newStats;
+      });
+    } else {
+      setError(`Failed to delete camera. Please try again.`);
+    }
+  };
+
   // Calculate total stats across all cameras
-  const totalStats = cameras.reduce(
+  const totalStats = (cameras || []).reduce(
     (acc, camera) => {
-      const stat = stats[camera.camera_id] || { people_in: 0, people_out: 0, people_in_frame: 0 };
+      const stat = stats[camera.camera_id] || { people_in: 0, people_out: 0, current_count: 0 };
       acc.peopleIn += stat.people_in || 0;
       acc.peopleOut += stat.people_out || 0;
-      acc.peopleInFrame += stat.people_in_frame || 0;
+      acc.peopleInFrame += stat.current_count || 0;
       return acc;
     },
     { peopleIn: 0, peopleOut: 0, peopleInFrame: 0 }
@@ -117,11 +132,11 @@ export default function Home() {
         </Alert>
       )}
 
-      {loading && cameras.length === 0 ? (
+      {loading && (!cameras || cameras.length === 0) ? (
         <div className="grid place-items-center p-8">
           <p>Loading cameras...</p>
         </div>
-      ) : cameras.length === 0 ? (
+      ) : (!cameras || cameras.length === 0) ? (
         <div className="grid place-items-center rounded-lg border border-dashed p-8 text-center">
           <div>
             <h2 className="mb-2 text-lg font-semibold">No cameras configured</h2>
@@ -143,7 +158,8 @@ export default function Home() {
                 camera={camera}
                 stats={stats[camera.camera_id]}
                 onToggleEnabled={handleToggleCamera}
-              />
+                onDelete={handleDeleteCamera}
+                />
             ))}
           </div>
         </>

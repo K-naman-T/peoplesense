@@ -59,6 +59,21 @@ export default function CamerasPage() {
     }
   };
 
+  const handleDeleteCamera = async (cameraId: string) => {
+    const success = await camerasApi.deleteCamera(cameraId);
+    if (success) {
+      // Remove the camera and its stats from the local state to update the UI
+      setCameras(prevCameras => prevCameras.filter(c => c.camera_id !== cameraId));
+      setStats(prevStats => {
+        const newStats = { ...prevStats };
+        delete newStats[cameraId];
+        return newStats;
+      });
+    } else {
+      setError(`Failed to delete camera. Please try again.`);
+    }
+  };
+
   return (
     <div className="space-y-8">
       <div className="flex items-center justify-between">
@@ -101,6 +116,7 @@ export default function CamerasPage() {
                   camera={camera}
                   stats={stats[camera.camera_id]}
                   onToggleEnabled={handleToggleCamera}
+                  onDelete={handleDeleteCamera}
                 />
               ))}
             </div>

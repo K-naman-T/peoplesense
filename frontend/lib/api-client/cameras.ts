@@ -1,55 +1,39 @@
 /**
- * API client for camera-related endpoints
+ * API client for BROWSER-SIDE usage only.
+ * This should be used in Client Components ('use client').
  */
 import axios from 'axios';
-import { CameraConfig, CameraList, LineDefinition } from '@/types';
+import { CameraConfig, LineDefinition } from '@/types';
 
-// Verify your API_URL constant
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const API_URL = process.env.NEXT_PUBLIC_API_URL;
 
-const camerasApi = {
+if (!API_URL) {
+  throw new Error("FATAL: NEXT_PUBLIC_API_URL environment variable is not set for browser-side API client.");
+}
+
+const camerasApiBrowser = {
   /**
    * Get all cameras
    */
   getAllCameras: async (): Promise<CameraConfig[]> => {
     try {
-      const response = await axios.get<CameraList>(`${API_URL}/cameras/`);
-      return response.data.cameras;
-    } catch (error) {
-      console.error('Error fetching cameras:', error);
-      return [];
-    }
-  },
-
-  /**
-   * Get a camera by ID
-   */
-  getCamera: async (cameraId: string): Promise<CameraConfig | null> => {
-    try {
-      const response = await axios.get<CameraConfig>(`${API_URL}/cameras/${cameraId}`);
+      const response = await axios.get<CameraConfig[]>(`${API_URL}/cameras/`);
       return response.data;
     } catch (error) {
-      console.error(`Error fetching camera ${cameraId}:`, error);
-      return null;
+      console.error('[BROWSER] Error fetching cameras:', error);
+      return [];
     }
   },
 
   /**
    * Add a new camera
    */
-  addCamera: async (camera: Omit<CameraConfig, 'camera_id'>): Promise<CameraConfig | null> => {
-    // Generate a unique camera ID if not provided
-    const cameraToAdd: CameraConfig = {
-      camera_id: `cam_${Date.now().toString(36)}`,
-      ...camera,
-      enabled: camera.enabled ?? true,
-    };
-    
+  addCamera: async (camera: Omit<CameraConfig, 'camera_id' | 'line_points'>): Promise<CameraConfig | null> => {
     try {
-      const response = await axios.post<CameraConfig>(`${API_URL}/cameras/`, cameraToAdd);
+      const response = await axios.post<CameraConfig>(`${API_URL}/cameras/`, camera);
       return response.data;
     } catch (error) {
-      console.error('Error adding camera:', error);
+      console.error('[BROWSER] Error adding camera:', error);
       return null;
     }
   },
@@ -62,7 +46,7 @@ const camerasApi = {
       const response = await axios.put<CameraConfig>(`${API_URL}/cameras/${camera.camera_id}`, camera);
       return response.data;
     } catch (error) {
-      console.error(`Error updating camera ${camera.camera_id}:`, error);
+      console.error(`[BROWSER] Error updating camera ${camera.camera_id}:`, error);
       return null;
     }
   },
@@ -75,26 +59,7 @@ const camerasApi = {
       await axios.delete(`${API_URL}/cameras/${cameraId}`);
       return true;
     } catch (error) {
-      console.error(`Error deleting camera ${cameraId}:`, error);
-      return false;
-    }
-  },
-
-  /**
-   * Set the counting line for a camera
-   */
-  setCountingLine: async (lineDefinition: LineDefinition): Promise<boolean> => {
-    try {
-      // Change "line" to "lines" to match the backend endpoint
-      const lineData = {
-        camera_id: lineDefinition.camera_id,
-        points: lineDefinition.points
-      };
-
-      await axios.post(`${API_URL}/cameras/${lineDefinition.camera_id}/lines`, lineData);
-      return true;
-    } catch (error) {
-      console.error('Error setting counting line:', error);
+      console.error(`[BROWSER] Error deleting camera ${cameraId}:`, error);
       return false;
     }
   },
@@ -110,8 +75,8 @@ const camerasApi = {
    * Get the snapshot URL for a camera
    */
   getSnapshotUrl: (cameraId: string, annotated: boolean = true): string => {
-    return `${API_URL}/cameras/${cameraId}/snapshot?annotated=${annotated}`;
+    return `${API_URL}/cameras/${cameraId}/snapshot?annotated=${annotated}&t=${new Date().getTime()}`;
   }
 };
 
-export default camerasApi;
+export default camerasApiBrowser;
