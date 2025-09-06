@@ -181,7 +181,7 @@ class CameraTracker:
             except Exception as e:
                 print(f"Error in tracking loop for {self.config.name}: {e}")
                 time.sleep(1) # Avoid rapid-fire error loops
-        
+    
         print(f"Tracking loop stopped for {self.config.name}")
 
     def _get_side(self, p1, p2, point):

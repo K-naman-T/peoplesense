@@ -36,7 +36,13 @@ export function CameraEditForm({ initialCamera }: CameraEditFormProps) {
     setSaving(true);
     setError(null);
     try {
-      const formattedLinePoints: [number, number][] = linePoints.map(point => [point.x, point.y]);
+      // --- FIX: Explicitly type the variable based on what the backend expects ---
+      let formattedLinePoints: [number, number][] = [];
+      
+      if (linePoints.length > 0) {
+        // Convert Point objects to the tuple format the backend expects
+        formattedLinePoints = linePoints.map(point => [point.x, point.y]);
+      }
       
       const updatedCamera: CameraConfig = {
         ...camera,
