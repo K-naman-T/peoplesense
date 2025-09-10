@@ -154,8 +154,13 @@ class CameraTracker:
 
                 # Draw the counting line
                 if self.config.line_points and len(self.config.line_points) >= 2:
-                    p1 = (self.config.line_points[0].x * frame_width // 100, self.config.line_points[0].y * frame_height // 100)
-                    p2 = (self.config.line_points[1].x * frame_width // 100, self.config.line_points[1].y * frame_height // 100)
+                    # Unpack tuples directly
+                    x1, y1 = self.config.line_points[0]
+                    x2, y2 = self.config.line_points[1]
+                    
+                    # Convert to pixel coordinates
+                    p1 = (x1 * frame_width // 100, y1 * frame_height // 100)
+                    p2 = (x2 * frame_width // 100, y2 * frame_height // 100)
                     cv2.line(annotated_frame, p1, p2, (255, 0, 0), 2)
 
                 # Always show stats
@@ -202,14 +207,9 @@ class CameraTracker:
             return buffer.tobytes() if ret else None
     
     def update_config(self, new_config: CameraConfig):
+        """Update the tracker's configuration."""
         with self.lock:
-            should_restart = (self.config.stream_url != new_config.stream_url or
-                              self.config.enabled != new_config.enabled)
             self.config = new_config
-            self.stats.camera_name = new_config.name
-        if should_restart:
-            self.stop()
-            self.start()
 
 # --- CameraManager Class ---
 class CameraManager:

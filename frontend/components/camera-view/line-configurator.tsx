@@ -39,11 +39,31 @@ export function LineConfigurator({
   // Handle point clicks
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!containerRef.current) return;
-
-    const rect = containerRef.current.getBoundingClientRect();
-    const x = Math.round((e.clientX - rect.left) / rect.width * 100);
-    const y = Math.round((e.clientY - rect.top) / rect.height * 100);
-
+    const container = containerRef.current;
+    const rect = container.getBoundingClientRect();
+    
+    // Get the image element inside the container
+    const imageElement = container.querySelector('img');
+    if (!imageElement) return;
+    
+    // Get the actual displayed dimensions of the image
+    const imageRect = imageElement.getBoundingClientRect();
+    
+    // Calculate the letterboxing/pillarboxing offsets
+    const offsetX = (rect.width - imageRect.width) / 2;
+    const offsetY = (rect.height - imageRect.height) / 2;
+    
+    // Adjust click coordinates to account for letterboxing/pillarboxing
+    const imageX = e.clientX - rect.left - offsetX;
+    const imageY = e.clientY - rect.top - offsetY;
+    
+    // Calculate percentages based on the actual image dimensions (not container)
+    const x = Math.round((imageX / imageRect.width) * 100);
+    const y = Math.round((imageY / imageRect.height) * 100);
+    
+    // Only accept clicks inside the actual image area
+    if (x < 0 || x > 100 || y < 0 || y > 100) return;
+    
     let newPoints = [...points];
     if (newPoints.length >= 2) {
       newPoints = [];

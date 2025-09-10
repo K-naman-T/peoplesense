@@ -1,6 +1,6 @@
 {
-    "11c27098-cd2e-41f9-8887-d9e6e8c7e2ed": {
-        "camera_id": "11c27098-cd2e-41f9-8887-d9e6e8c7e2ed",
+    "723e03ef-d902-4f6b-9e8c-51b94b439969": {
+        "camera_id": "723e03ef-d902-4f6b-9e8c-51b94b439969",
         "name": "texmin",
         "stream_url": "rtsp://admin:admin@123@172.17.105.131:554/cam/realmonitor?channel=2&subtype=0",
         "enabled": true,
