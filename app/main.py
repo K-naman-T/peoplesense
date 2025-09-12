@@ -122,3 +122,31 @@ async def get_snapshot(camera_id: str, annotated: bool = True):
     
     # Return the single frame as a JPEG image
     return Response(content=frame_bytes, media_type="image/jpeg")
+
+
+@app.get("/cameras/{camera_id}/mjpeg")
+async def mjpeg_stream(camera_id: str, annotated: bool = True):
+    """Stream video using MJPEG format."""
+    if camera_id not in app_state["camera_manager"].trackers:
+        raise HTTPException(status_code=404, detail="Camera not found")
+    
+    async def generate_frames():
+        boundary = "frame"
+        while True:
+            frame_bytes = app_state["camera_manager"].get_frame(camera_id, annotated)
+            if not frame_bytes:
+                await asyncio.sleep(0.1)
+                continue
+                
+            yield f"--{boundary}\r\n".encode()
+            yield b"Content-Type: image/jpeg\r\n\r\n"
+            yield frame_bytes
+            yield b"\r\n"
+            await asyncio.sleep(0.05)  # ~20fps
+    
+    headers = {
+        "Content-Type": f"multipart/x-mixed-replace; boundary={boundary}",
+        "Cache-Control": "no-cache",
+    }
+    
+    return StreamingResponse(generate_frames(), headers=headers)

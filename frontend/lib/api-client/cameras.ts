@@ -41,12 +41,12 @@ const camerasApiBrowser = {
   /**
    * Update a camera configuration
    */
-  updateCamera: async (camera: CameraConfig): Promise<CameraConfig | null> => {
+  updateCamera: async (cameraId: string, payload: Omit<CameraConfig, 'camera_id'>): Promise<CameraConfig | null> => {
     try {
-      const response = await axios.put<CameraConfig>(`${API_URL}/cameras/${camera.camera_id}`, camera);
+      const response = await axios.put<CameraConfig>(`${API_URL}/cameras/${cameraId}`, payload);
       return response.data;
     } catch (error) {
-      console.error(`[BROWSER] Error updating camera ${camera.camera_id}:`, error);
+      console.error(`[BROWSER] Error updating camera ${cameraId}:`, error);
       return null;
     }
   },

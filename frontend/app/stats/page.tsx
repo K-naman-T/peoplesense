@@ -28,23 +28,31 @@ export default function StatsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Move fetchCameras to component scope so it can be used in multiple places
+  async function fetchCameras() {
+    try {
+      const camerasData = await camerasApi.getAllCameras();
+      setCameras(camerasData);
+      
+      // Clean up: if selected camera no longer exists, reset to 'all'
+      if (selectedCamera !== 'all' && 
+          !camerasData.some(cam => cam.camera_id === selectedCamera)) {
+        console.log(`Selected camera ${selectedCamera} no longer exists`);
+        setSelectedCamera('all');
+      }
+      
+      // Only set selected camera if none is selected yet
+      else if (camerasData.length > 0 && selectedCamera === 'all') {
+        setSelectedCamera(camerasData[0].camera_id);
+      }
+    } catch (err) {
+      console.error('Error fetching cameras:', err);
+      setError('Failed to load cameras');
+    }
+  }
+
   // Fetch cameras on mount
   useEffect(() => {
-    async function fetchCameras() {
-      try {
-        const camerasData = await camerasApi.getAllCameras();
-        setCameras(camerasData);
-        
-        // Select the first camera by default if available
-        if (camerasData.length > 0) {
-          setSelectedCamera(camerasData[0].camera_id);
-        }
-      } catch (err) {
-        console.error('Error fetching cameras:', err);
-        setError('Failed to load cameras');
-      }
-    }
-
     fetchCameras();
   }, []);
 
@@ -59,7 +67,15 @@ export default function StatsPage() {
         if (selectedCamera === 'all') {
           statsData = await statsApi.getAllStats(timeRange);
         } else {
-          statsData = await statsApi.getCameraStatsByPeriod(selectedCamera, timeRange);
+          statsData = await statsApi.getCameraStats(selectedCamera);
+          
+          // Now fetchCameras is in scope and can be called here
+          if (!statsData) {
+            console.warn(`Camera ${selectedCamera} no longer exists, fetching all stats instead`);
+            await fetchCameras();
+            statsData = await statsApi.getAllStats(timeRange);
+            setSelectedCamera('all');
+          }
         }
         
         setStats(Array.isArray(statsData) 

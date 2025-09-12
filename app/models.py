@@ -6,8 +6,8 @@ import cv2
 import numpy as np  # Added missing import for numpy
 
 class Point(BaseModel):
-    x: int
-    y: int
+    x: float
+    y: float
 
 
 # This model seems unused in the current implementation but is fine.
@@ -24,7 +24,14 @@ class CameraConfig(BaseModel):
     stream_url: Union[str, int]
     enabled: bool = True
     # List of tuples (percent coordinates, 0-100 range)
-    line_points: List[Tuple[int, int]] = []
+    line_points: Optional[List[Point]] = None
+
+
+class CameraUpdate(BaseModel):
+    name: Optional[str] = None
+    stream_url: Optional[str] = None
+    enabled: Optional[bool] = None
+    line_points: Optional[List[Point]] = None
 
 
 class CameraList(BaseModel):

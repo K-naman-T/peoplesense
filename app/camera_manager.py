@@ -1,12 +1,12 @@
 import cv2
 import time
 import json
-import threading  # Keep this import
+import threading
 import numpy as np
 from uuid import uuid4
 from typing import Dict, List, Tuple, Optional, Union
 from ultralytics import YOLO
-from queue import Queue, Empty # Import Queue
+from queue import Queue, Empty
 
 from app.models import CameraConfig, TrackingStats, Point
 
@@ -32,7 +32,7 @@ class CameraTracker:
 
     def start(self):
         """Start the tracking and reading threads"""
-        # --- FIX: Remove the 'enabled' check, only check if already running ---
+        # Only check if already running
         if self.is_running:
             return
         self.is_running = True
@@ -57,7 +57,7 @@ class CameraTracker:
         cap = None
         while self.is_running:
             try:
-                # --- START: ROBUST RECONNECTION LOGIC ---
+                # Robust reconnection logic
                 if cap is None or not cap.isOpened():
                     print(f"Attempting to connect to camera: {self.config.name}")
                     cap = cv2.VideoCapture(self.config.stream_url)
@@ -81,7 +81,6 @@ class CameraTracker:
                 ret, frame = cap.retrieve()
                 if ret:
                     self.frame_queue.put(frame)
-                # --- END: ROBUST RECONNECTION LOGIC ---
 
             except Exception as e:
                 print(f"Error in frame reader for {self.config.name}: {e}")
@@ -95,111 +94,172 @@ class CameraTracker:
         print(f"Frame reader stopped for {self.config.name}")
 
     def _tracking_loop(self):
-        """The main loop for video processing, now consuming from the queue."""
+        """The main loop for video processing, consuming from the queue."""
         print(f"Tracking loop started for {self.config.name}")
+        
+        # Initialize tracking structures more robustly
+        self.last_positions = {}  # Track positions across frames
+        self.counted_ids = set()  # Track which IDs have already been counted
+        
         while self.is_running:
             try:
                 # Get a frame from the queue with a timeout
                 frame = self.frame_queue.get(timeout=1.0)
-            except Empty:
-                # If queue is empty, loop again to check self.is_running
-                continue
-            except Exception as e:
-                print(f"Error getting frame from queue for {self.config.name}: {e}")
-                continue
-
-            try:
-                # --- The rest of the processing logic remains the same ---
-                frame_height, frame_width, _ = frame.shape
                 
-                # Process the frame for object detection regardless of enabled status
+                # Process the frame with YOLO
                 results = self.model.track(frame, persist=True, classes=[0], verbose=False)
                 
+                # Create a copy for annotation
                 annotated_frame = frame.copy()
+                frame_height, frame_width, _ = frame.shape
+                
+                # Initialize current_ids OUTSIDE the conditional blocks
                 current_ids = set()
+                
+                # Draw line REGARDLESS of person detection
+                if self.config.line_points and len(self.config.line_points) >= 2:
+                    # Add defensive unpacking to handle both formats
+                    try:
+                        # Get the first two points
+                        point1 = self.config.line_points[0]
+                        point2 = self.config.line_points[1]
+                        
+                        # Extract coordinates based on the actual data structure
+                        if isinstance(point1, dict) and 'x' in point1 and 'y' in point1:
+                            # Handle dict format (from JSON)
+                            x1, y1 = float(point1['x']), float(point1['y'])
+                            x2, y2 = float(point2['x']), float(point2['y'])
+                        elif hasattr(point1, 'x') and hasattr(point1, 'y'):
+                            # Handle object format (from Pydantic)
+                            x1, y1 = float(point1.x), float(point1.y)
+                            x2, y2 = float(point2.x), float(point2.y)
+                        elif isinstance(point1, (tuple, list)) and len(point1) >= 2:
+                            # Handle tuple format
+                            x1, y1 = float(point1[0]), float(point1[1])
+                            x2, y2 = float(point2[0]), float(point2[1])
+                        else:
+                            print(f"Warning: Unrecognized point format: {point1}")
+                            continue
+                            
+                        # Now that we have numeric values, calculate pixel coordinates
+                        p1 = (int(x1 * frame_width / 100), int(y1 * frame_height / 100))
+                        p2 = (int(x2 * frame_width / 100), int(y2 * frame_height / 100))
+                        
+                        # Now draw the line
+                        cv2.line(annotated_frame, p1, p2, (255, 255, 255), 5)  # White border
+                        cv2.line(annotated_frame, p1, p2, (0, 0, 255), 2)      # Red line
+                        
+                        # Add large circles at the endpoints
+                        cv2.circle(annotated_frame, p1, 8, (255, 255, 255), -1)
+                        cv2.circle(annotated_frame, p1, 5, (0, 0, 255), -1)
+                        cv2.circle(annotated_frame, p2, 8, (255, 255, 255), -1)
+                        cv2.circle(annotated_frame, p2, 5, (0, 0, 255), -1)
 
-                # Draw detected people
+                        # Add percentage labels for debugging
+                        cv2.putText(annotated_frame, f"({x1}%,{y1}%)", 
+                                   (p1[0]+10, p1[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                        cv2.putText(annotated_frame, f"({x2}%,{y2}%)", 
+                                   (p2[0]+10, p2[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+                    except Exception as e:
+                        print(f"Error processing line points: {e}")
+                        print(f"line_points data: {self.config.line_points}")
+                        import traceback
+                        traceback.print_exc()
+                        continue
+
+                # Process people detection
                 if results[0].boxes.id is not None:
                     boxes = results[0].boxes.xyxy.cpu().numpy().astype(int)
                     ids = results[0].boxes.id.cpu().numpy().astype(int)
                     
+                    # Process each detected person
                     for box, obj_id in zip(boxes, ids):
-                        # Basic detection and drawing happens regardless of enabled status
-                        x1, y1, x2, y2 = box
-                        center = ((x1 + x2) // 2, (y1 + y2) // 2)
+                        x1_box, y1_box, x2_box, y2_box = box
+                        center = ((x1_box + x2_box) // 2, (y1_box + y2_box) // 2)
                         str_id = str(obj_id)
                         current_ids.add(str_id)
                         
-                        # Only do counting logic if the camera is enabled
-                        if self.config.enabled and self.config.line_points and len(self.config.line_points) >= 2:
-                            p1 = (self.config.line_points[0].x * frame_width // 100, self.config.line_points[0].y * frame_height // 100)
-                            p2 = (self.config.line_points[1].x * frame_width // 100, self.config.line_points[1].y * frame_height // 100)
+                        # Draw bounding box
+                        cv2.rectangle(annotated_frame, (x1_box, y1_box), (x2_box, y2_box), (0, 255, 0), 2)
+                        cv2.putText(annotated_frame, f"ID: {str_id}", (x1_box, y1_box - 10), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                        
+                        # Check for line crossing if we have previous position AND a line is defined
+                        if self.config.line_points and len(self.config.line_points) >= 2:
+                            p1 = (int(self.config.line_points[0][0] * frame_width / 100), 
+                                  int(self.config.line_points[0][1] * frame_height / 100))
+                            p2 = (int(self.config.line_points[1][0] * frame_width / 100), 
+                                  int(self.config.line_points[1][1] * frame_height / 100))
                             
                             prev_pos = self.last_positions.get(str_id)
-                            if prev_pos:
+                            if prev_pos and str_id not in self.counted_ids:
+                                # Determine which side of the line the points are on
                                 side_before = self._get_side(p1, p2, prev_pos)
                                 side_after = self._get_side(p1, p2, center)
                                 
-                                if side_before is not None and side_after is not None and side_before != side_after:
-                                    if side_after == 1 and str_id not in self.counted_ids:
-                                        self.stats.people_in += 1
-                                        self.counted_ids.add(str_id)
-                                    elif side_after == -1 and str_id in self.counted_ids:
-                                        self.stats.people_out += 1
-                                        self.counted_ids.remove(str_id)
-                            
+                                # Only count valid crossings (not just touches)
+                                if side_before != 0 and side_after != 0 and side_before != side_after:
+                                    # Make crossing highly visible with thicker arrows
+                                    if side_before < 0 and side_after > 0:
+                                        cv2.arrowedLine(annotated_frame, prev_pos, center, (0, 255, 0), 4)
+                                        with self.lock:
+                                            self.stats.people_in += 1
+                                        print(f"Person {str_id} entered at position {center}")
+                                    elif side_before > 0 and side_after < 0:
+                                        cv2.arrowedLine(annotated_frame, prev_pos, center, (0, 0, 255), 4)
+                                        with self.lock:
+                                            self.stats.people_out += 1
+                                        print(f"Person {str_id} exited at position {center}")
+                                
+                                self.counted_ids.add(str_id)
+                        
+                        # Update position for next frame
                         self.last_positions[str_id] = center
-                        cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                        cv2.putText(annotated_frame, f"ID {str_id}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-
-                # Draw the counting line
-                if self.config.line_points and len(self.config.line_points) >= 2:
-                    # Unpack tuples directly
-                    x1, y1 = self.config.line_points[0]
-                    x2, y2 = self.config.line_points[1]
-                    
-                    # Convert to pixel coordinates
-                    p1 = (x1 * frame_width // 100, y1 * frame_height // 100)
-                    p2 = (x2 * frame_width // 100, y2 * frame_height // 100)
-                    cv2.line(annotated_frame, p1, p2, (255, 0, 0), 2)
-
-                # Always show stats
-                cv2.putText(annotated_frame, f"In: {self.stats.people_in}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-                cv2.putText(annotated_frame, f"Out: {self.stats.people_out}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-                cv2.putText(annotated_frame, f"In Frame: {len(current_ids)}", (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-
-                # Always update the frames (needed for snapshots)
+                
+                # Add stats overlay to frame
+                cv2.putText(annotated_frame, f"In: {self.stats.people_in}", (10, 30), 
+                          cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                cv2.putText(annotated_frame, f"Out: {self.stats.people_out}", (10, 70), 
+                          cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                
+                # Update frames and stats with lock protection
                 with self.lock:
                     self.last_frame = frame
                     self.annotated_frame = annotated_frame
-                    # Only update counting stats if enabled
-                    if self.config.enabled:
-                        self.stats.current_count = len(current_ids)
-                        self.stats.total_tracked = max(self.stats.total_tracked, len(self.last_positions))
+                    self.stats.current_count = len(current_ids)
+                    self.stats.total_tracked = max(self.stats.total_tracked, len(self.last_positions))
                     self.stats.last_updated = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-
-                # Only update tracking state if the camera is enabled
-                if self.config.enabled:
-                    self.last_positions = {k: v for k, v in self.last_positions.items() if k in current_ids}
-                    self.counted_ids = {k for k in self.counted_ids if k in current_ids}
-
+                
+                # Clean up tracking for IDs no longer in the frame
+                # BUT keep the counted_ids to avoid double counting
+                self.last_positions = {k: v for k, v in self.last_positions.items() if k in current_ids}
+                
+            except Empty:
+                # Queue timeout, just continue to check is_running
+                continue
             except Exception as e:
                 print(f"Error in tracking loop for {self.config.name}: {e}")
-                time.sleep(1) # Avoid rapid-fire error loops
-    
+                import traceback
+                traceback.print_exc()
+                time.sleep(1)  # Prevent rapid-fire errors
+        
         print(f"Tracking loop stopped for {self.config.name}")
 
     def _get_side(self, p1, p2, point):
+        """Determine which side of a line a point is on."""
         val = (p2[0] - p1[0]) * (point[1] - p1[1]) - (p2[1] - p1[1]) * (point[0] - p1[0])
         if val > 0: return 1
         if val < 0: return -1
         return 0
     
     def get_stats(self) -> TrackingStats:
+        """Get current tracking statistics."""
         with self.lock:
             return self.stats.copy(deep=True)
         
     def get_frame(self, annotated: bool = True):
+        """Get the latest frame (annotated or raw)."""
         with self.lock:
             frame_to_return = self.annotated_frame if annotated else self.last_frame
             if frame_to_return is None: return None
@@ -209,6 +269,9 @@ class CameraTracker:
     def update_config(self, new_config: CameraConfig):
         """Update the tracker's configuration."""
         with self.lock:
+            print(f"Updating camera {self.config.camera_id} configuration")
+            print(f"Old line points: {self.config.line_points}")
+            print(f"New line points: {new_config.line_points}")
             self.config = new_config
 
 # --- CameraManager Class ---
@@ -219,15 +282,16 @@ class CameraManager:
         self.model = YOLO(model_path)
         self.config_file = config_file
         self.trackers: Dict[str, CameraTracker] = {}
-        # --- FIX: Use a Re-entrant Lock to prevent deadlocks ---
+        # Use a Re-entrant Lock to prevent deadlocks
         self.lock = threading.RLock()
         self._load_config()
 
     def _load_config(self):
+        """Load camera configurations from file."""
         try:
             with open(self.config_file, 'r') as f:
                 configs_data = json.load(f)
-            for cam_id, config_dict in configs_data.items():
+            for camera_id, config_dict in configs_data.items():
                 config = CameraConfig(**config_dict)
                 self.add_camera(config, save_to_file=False)
         except FileNotFoundError:
@@ -236,28 +300,29 @@ class CameraManager:
             print(f"Error loading config: {e}")
 
     def save_config(self):
+        """Save camera configurations to file."""
         with self.lock:
             configs = {cam_id: tracker.config.dict() for cam_id, tracker in self.trackers.items()}
             with open(self.config_file, 'w') as f:
                 json.dump(configs, f, indent=4)
 
     def add_camera(self, config: CameraConfig, save_to_file: bool = True) -> CameraConfig:
-        # Create the tracker instance first.
+        """Add a new camera and start its tracking."""
+        # Create the tracker instance first
         tracker = CameraTracker(config, self.model)
 
         with self.lock:
-            # Add the tracker to the dictionary.
+            # Add the tracker to the dictionary
             self.trackers[config.camera_id] = tracker
             if save_to_file: self.save_config()
         
-        # --- START: FIX ---
-        # Start the tracker's threads AFTER adding it and releasing the lock.
+        # Start the tracker's threads AFTER adding it and releasing the lock
         tracker.start()
-        # --- END: FIX ---
             
         return config
     
     def remove_camera(self, camera_id: str) -> bool:
+        """Remove a camera by ID."""
         with self.lock:
             if camera_id in self.trackers:
                 self.trackers[camera_id].stop()
@@ -267,36 +332,37 @@ class CameraManager:
             return False
     
     def update_camera(self, camera_id: str, camera_update: CameraConfig) -> Optional[CameraConfig]:
+        """Update a camera's configuration."""
         with self.lock:
             if camera_id not in self.trackers:
                 return None
             
-            # --- START: FIX ---
-            # Get the specific tracker instance
+            # Get the tracker instance
             tracker = self.trackers[camera_id]
             
-            # Call the tracker's own update method to apply the new config
+            # CRITICAL: Update the tracker's config
             tracker.update_config(camera_update)
-            # --- END: FIX ---
-
+            
             self.save_config()
             return tracker.config
     
     def get_camera(self, camera_id: str) -> Optional[CameraConfig]:
+        """Get a camera configuration by ID."""
         with self.lock:
             if camera_id in self.trackers:
                 return self.trackers[camera_id].config
             return None
     
     def get_all_cameras(self) -> List[CameraConfig]:
+        """Get all camera configurations."""
         with self.lock:
             return [tracker.config for tracker in self.trackers.values()]
 
     def get_all_stats(self) -> List[TrackingStats]:
+        """Get statistics for all cameras."""
         with self.lock:
             return [tracker.get_stats() for tracker in self.trackers.values()]
 
-    # --- ADD THIS METHOD ---
     def get_camera_stats(self, camera_id: str) -> Optional[TrackingStats]:
         """Get tracking statistics for a specific camera."""
         with self.lock:
@@ -305,11 +371,11 @@ class CameraManager:
             return None
     
     def get_frame(self, camera_id: str, annotated: bool = True) -> Optional[bytes]:
+        """Get the latest frame from a specific camera."""
         if camera_id in self.trackers:
             return self.trackers[camera_id].get_frame(annotated)
         return None
 
-    # --- ADD THIS METHOD ---
     def shutdown(self):
         """Gracefully stop all camera trackers."""
         print("Shutting down all camera trackers...")

@@ -13,47 +13,38 @@ import { CameraConfig, Point } from '@/types';
 import camerasApi from '@/lib/api-client/cameras';
 import { LineConfigurator } from '@/components/camera-view/line-configurator';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-
 interface CameraEditFormProps {
   initialCamera: CameraConfig;
 }
 
 export function CameraEditForm({ initialCamera }: CameraEditFormProps) {
   const router = useRouter();
-  const [camera] = useState<CameraConfig>(initialCamera);
   const [name, setName] = useState<string>(initialCamera.name || '');
   const [streamUrl, setStreamUrl] = useState<string>(initialCamera.stream_url || '');
   const [enabled, setEnabled] = useState<boolean>(initialCamera.enabled);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const initialLinePoints = (initialCamera.line_points || []).map(([x, y]) => ({ x, y }));
-  const [linePoints, setLinePoints] = useState<Point[]>(initialLinePoints);
+  // The initial data is now in the correct Point[] format. No conversion needed.
+  const [linePoints, setLinePoints] = useState<Point[]>(initialCamera.line_points || []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
     setError(null);
+    
     try {
-      // --- FIX: Explicitly type the variable based on what the backend expects ---
-      let formattedLinePoints: [number, number][] = [];
-      
-      if (linePoints.length > 0) {
-        // Convert Point objects to the tuple format the backend expects
-        formattedLinePoints = linePoints.map(point => [point.x, point.y]);
-      }
-      
-      const updatedCamera: CameraConfig = {
-        ...camera,
+      // The `linePoints` state is already in the correct format [{x, y}, {x, y}].
+      const updatePayload = {
         name,
         stream_url: streamUrl,
         enabled,
-        line_points: formattedLinePoints,
+        line_points: linePoints,
       };
       
-      await camerasApi.updateCamera(updatedCamera);
-      router.push(`/cameras/${camera.camera_id}`);
+      await camerasApi.updateCamera(initialCamera.camera_id, updatePayload);
+      
+      router.push(`/cameras/${initialCamera.camera_id}`);
       router.refresh();
     } catch (err) {
       console.error('Error saving camera:', err);
@@ -98,16 +89,19 @@ export function CameraEditForm({ initialCamera }: CameraEditFormProps) {
         </div>
         <div className="relative h-[480px] w-full bg-muted">
           <LineConfigurator 
-            cameraId={camera.camera_id}
+            cameraId={initialCamera.camera_id}
             initialPoints={linePoints}
             onLineChange={setLinePoints}
           />
         </div>
       </div>
 
-      <div className="flex justify-end">
+      <div className="flex justify-end gap-2">
+        <Button type="button" variant="outline" asChild>
+          <Link href={`/cameras/${initialCamera.camera_id}`}>Cancel</Link>
+        </Button>
         <Button type="submit" disabled={saving}>
-          {saving ? 'Saving...' : 'Save Configuration'}
+          {saving ? 'Saving...' : 'Save Changes'}
         </Button>
       </div>
     </form>

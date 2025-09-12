@@ -51,8 +51,16 @@ export default function Home() {
     const camera = cameras.find(c => c.camera_id === cameraId);
     if (!camera) return;
     
-    const updatedCamera = { ...camera, enabled };
-    const result = await camerasApi.updateCamera(updatedCamera);
+    // The API expects a payload without the camera_id.
+    const payload = { 
+      name: camera.name,
+      stream_url: camera.stream_url,
+      line_points: camera.line_points,
+      enabled: enabled, // Use the new enabled value
+    };
+    
+    // Call the API with two arguments: the ID and the payload.
+    const result = await camerasApi.updateCamera(cameraId, payload);
     
     if (result) {
       setCameras(cameras.map(c => 
