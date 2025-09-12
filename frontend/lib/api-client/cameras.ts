@@ -1,9 +1,16 @@
 /**
  * API client for BROWSER-SIDE usage only.
- * This should be used in Client Components ('use client').
  */
 import axios from 'axios';
-import { CameraConfig, LineDefinition } from '@/types';
+import { CameraConfig } from '@/types';
+
+// Create an axios instance with timeouts
+const apiClient = axios.create({
+  timeout: 5000, // 5 second timeout for all requests
+  headers: {
+    'Content-Type': 'application/json'
+  }
+});
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL;
 
@@ -17,7 +24,14 @@ const camerasApiBrowser = {
    */
   getAllCameras: async (): Promise<CameraConfig[]> => {
     try {
-      const response = await axios.get<CameraConfig[]>(`${API_URL}/cameras/`);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      
+      const response = await apiClient.get<CameraConfig[]>(`${API_URL}/cameras/`, {
+        signal: controller.signal
+      });
+      
+      clearTimeout(timeoutId);
       return response.data;
     } catch (error) {
       console.error('[BROWSER] Error fetching cameras:', error);
@@ -26,14 +40,21 @@ const camerasApiBrowser = {
   },
 
   /**
-   * Add a new camera
+   * Get camera by ID
    */
-  addCamera: async (camera: Omit<CameraConfig, 'camera_id' | 'line_points'>): Promise<CameraConfig | null> => {
+  getCamera: async (cameraId: string): Promise<CameraConfig | null> => {
     try {
-      const response = await axios.post<CameraConfig>(`${API_URL}/cameras/`, camera);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      
+      const response = await apiClient.get<CameraConfig>(`${API_URL}/cameras/${cameraId}`, {
+        signal: controller.signal
+      });
+      
+      clearTimeout(timeoutId);
       return response.data;
     } catch (error) {
-      console.error('[BROWSER] Error adding camera:', error);
+      console.error(`[BROWSER] Error fetching camera ${cameraId}:`, error);
       return null;
     }
   },
@@ -42,11 +63,25 @@ const camerasApiBrowser = {
    * Update a camera configuration
    */
   updateCamera: async (cameraId: string, payload: Omit<CameraConfig, 'camera_id'>): Promise<CameraConfig | null> => {
+    let timeoutId: NodeJS.Timeout;
     try {
-      const response = await axios.put<CameraConfig>(`${API_URL}/cameras/${cameraId}`, payload);
+      const controller = new AbortController();
+      timeoutId = setTimeout(() => controller.abort(), 8000); // Increased timeout
+      
+      const response = await apiClient.put<CameraConfig>(`${API_URL}/cameras/${cameraId}`, payload, {
+        signal: controller.signal
+      });
+      
+      clearTimeout(timeoutId);
       return response.data;
-    } catch (error) {
-      console.error(`[BROWSER] Error updating camera ${cameraId}:`, error);
+    } catch (error: any) {
+      clearTimeout(timeoutId!);
+      if (error.name === 'AbortError' || error.name === 'CanceledError' || 
+          error.message?.includes('canceled')) {
+        console.error(`[BROWSER] Request timed out when updating camera ${cameraId}`);
+      } else {
+        console.error(`[BROWSER] Error updating camera ${cameraId}:`, error);
+      }
       return null;
     }
   },
@@ -56,7 +91,14 @@ const camerasApiBrowser = {
    */
   deleteCamera: async (cameraId: string): Promise<boolean> => {
     try {
-      await axios.delete(`${API_URL}/cameras/${cameraId}`);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      
+      await apiClient.delete(`${API_URL}/cameras/${cameraId}`, {
+        signal: controller.signal
+      });
+      
+      clearTimeout(timeoutId);
       return true;
     } catch (error) {
       console.error(`[BROWSER] Error deleting camera ${cameraId}:`, error);
@@ -76,7 +118,37 @@ const camerasApiBrowser = {
    */
   getSnapshotUrl: (cameraId: string, annotated: boolean = true): string => {
     return `${API_URL}/cameras/${cameraId}/snapshot?annotated=${annotated}&t=${new Date().getTime()}`;
-  }
+  },
+
+  /**
+   * Add a new camera
+   */
+  addCamera: async (payload: Omit<CameraConfig, 'camera_id'>): Promise<CameraConfig | null> => {
+    let timeoutId: NodeJS.Timeout;
+    try {
+      const controller = new AbortController();
+      timeoutId = setTimeout(() => controller.abort(), 8000); // Increased timeout
+      
+      const response = await apiClient.post<CameraConfig>(`${API_URL}/cameras/`, payload, {
+        signal: controller.signal
+      });
+      
+      clearTimeout(timeoutId);
+      return response.data;
+    } catch (error: any) {
+      clearTimeout(timeoutId!); // Always clear the timeout
+      
+      // Better error handling with specific user feedback
+      if (error.name === 'AbortError' || error.name === 'CanceledError' || 
+          error.message?.includes('canceled')) {
+        console.error('[BROWSER] Request timed out when adding camera - server took too long to respond');
+        // You could throw a more specific error here if needed
+      } else {
+        console.error('[BROWSER] Error adding camera:', error);
+      }
+      return null;
+    }
+  },
 };
 
 export default camerasApiBrowser;

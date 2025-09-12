@@ -95,13 +95,28 @@ def draw_counting_line(config, frame_width, frame_height, annotated_frame, boxes
         stats: TrackingStats object to update
     """
     if config.line_points and len(config.line_points) >= 2:
-        # Unpack tuples directly
-        x1, y1 = config.line_points[0]  
-        x2, y2 = config.line_points[1]
+        # Extract points properly based on data structure
+        point1 = config.line_points[0]
+        point2 = config.line_points[1]
+        
+        # Handle different point formats
+        if isinstance(point1, dict) and 'x' in point1 and 'y' in point1:
+            x1, y1 = float(point1['x']), float(point1['y'])
+            x2, y2 = float(point2['x']), float(point2['y'])
+        elif hasattr(point1, 'x') and hasattr(point1, 'y'):
+            x1, y1 = float(point1.x), float(point1.y)
+            x2, y2 = float(point2.x), float(point2.y)
+        else:
+            try:
+                x1, y1 = point1
+                x2, y2 = point2
+            except (TypeError, ValueError):
+                print(f"Warning: Unsupported line_points format: {config.line_points}")
+                return
         
         # Convert percentage to pixel coordinates
-        p1 = (x1 * frame_width // 100, y1 * frame_height // 100)
-        p2 = (x2 * frame_width // 100, y2 * frame_height // 100)
+        p1 = (int(x1 * frame_width / 100), int(y1 * frame_height / 100))
+        p2 = (int(x2 * frame_width / 100), int(y2 * frame_height / 100))
         
         # Draw the counting line
         cv2.line(annotated_frame, p1, p2, (255, 0, 0), 2)

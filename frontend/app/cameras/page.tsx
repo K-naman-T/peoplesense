@@ -49,21 +49,38 @@ export default function CamerasPage() {
     const camera = cameras.find(c => c.camera_id === cameraId);
     if (!camera) return;
     
-    // Create the payload with the correct fields
-    const payload = {
-      name: camera.name,
-      stream_url: camera.stream_url,
-      line_points: camera.line_points,
-      enabled: enabled, // Use the new enabled value
-    };
+    // Optimistically update UI first
+    setCameras(cameras.map(c => 
+      c.camera_id === cameraId ? { ...c, enabled } : c
+    ));
     
-    // Call the API with two arguments: the ID and the payload
-    const result = await camerasApi.updateCamera(cameraId, payload);
-    
-    if (result) {
+    try {
+      // Add timeout to prevent hanging requests
+      const result = await Promise.race([
+        camerasApi.updateCamera(cameraId, {
+          name: camera.name,
+          stream_url: camera.stream_url,
+          line_points: camera.line_points,
+          enabled: enabled,
+        }),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Request timeout')), 5000)
+        )
+      ]);
+      
+      if (!result) {
+        // If the request fails, revert the UI change
+        setCameras(cameras.map(c => 
+          c.camera_id === cameraId ? { ...c, enabled: !enabled } : c
+        ));
+        console.error('Failed to update camera status');
+      }
+    } catch (err) {
+      // Revert on error
       setCameras(cameras.map(c => 
-        c.camera_id === cameraId ? { ...c, enabled } : c
+        c.camera_id === cameraId ? { ...c, enabled: !enabled } : c
       ));
+      console.error('Error updating camera:', err);
     }
   };
 

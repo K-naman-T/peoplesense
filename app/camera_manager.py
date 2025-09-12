@@ -17,6 +17,7 @@ class CameraTracker:
     def __init__(self, camera_config: CameraConfig, model: YOLO):
         self.config = camera_config
         self.model = model
+        self.device = model.device  # Get the device from the model
         self.is_running = False
         self.processing_thread = None
         self.reader_thread = None # Thread for reading frames
@@ -57,6 +58,15 @@ class CameraTracker:
         cap = None
         while self.is_running:
             try:
+                # Skip processing if camera is disabled - ADD THIS CHECK
+                if not self.config.enabled:
+                    # Release capture if camera is disabled
+                    if cap and cap.isOpened():
+                        cap.release()
+                        cap = None
+                    time.sleep(1)  # Sleep to avoid CPU spinning
+                    continue
+                
                 # Robust reconnection logic
                 if cap is None or not cap.isOpened():
                     print(f"Attempting to connect to camera: {self.config.name}")
@@ -95,14 +105,19 @@ class CameraTracker:
 
     def _tracking_loop(self):
         """The main loop for video processing, consuming from the queue."""
-        print(f"Tracking loop started for {self.config.name}")
+        print(f"Tracking loop started for {self.config.name} on {self.device}")
         
-        # Initialize tracking structures more robustly
-        self.last_positions = {}  # Track positions across frames
-        self.counted_ids = set()  # Track which IDs have already been counted
+        # Initialize tracking structures
+        self.last_positions = {}
+        self.counted_ids = set()
         
         while self.is_running:
             try:
+                # Skip processing if camera is disabled - ADD THIS CHECK
+                if not self.config.enabled:
+                    time.sleep(0.5)  # Sleep to avoid CPU spinning
+                    continue
+                
                 # Get a frame from the queue with a timeout
                 frame = self.frame_queue.get(timeout=1.0)
                 
@@ -120,50 +135,36 @@ class CameraTracker:
                 if self.config.line_points and len(self.config.line_points) >= 2:
                     # Add defensive unpacking to handle both formats
                     try:
-                        # Get the first two points
+                        # Extract points based on the actual data structure
                         point1 = self.config.line_points[0]
                         point2 = self.config.line_points[1]
                         
-                        # Extract coordinates based on the actual data structure
+                        # Handle dict/object format from frontend
                         if isinstance(point1, dict) and 'x' in point1 and 'y' in point1:
-                            # Handle dict format (from JSON)
                             x1, y1 = float(point1['x']), float(point1['y'])
                             x2, y2 = float(point2['x']), float(point2['y'])
                         elif hasattr(point1, 'x') and hasattr(point1, 'y'):
-                            # Handle object format (from Pydantic)
+                            # Handle Pydantic model objects
                             x1, y1 = float(point1.x), float(point1.y)
                             x2, y2 = float(point2.x), float(point2.y)
-                        elif isinstance(point1, (tuple, list)) and len(point1) >= 2:
-                            # Handle tuple format
-                            x1, y1 = float(point1[0]), float(point1[1])
-                            x2, y2 = float(point2[0]), float(point2[1])
                         else:
-                            print(f"Warning: Unrecognized point format: {point1}")
-                            continue
+                            # Try tuple unpacking as a fallback
+                            try:
+                                x1, y1 = point1
+                                x2, y2 = point2
+                            except (TypeError, ValueError):
+                                print(f"Warning: Unsupported line_points format: {self.config.line_points}")
+                                continue
                             
-                        # Now that we have numeric values, calculate pixel coordinates
+                        # Now convert coordinates safely with extracted numeric values
                         p1 = (int(x1 * frame_width / 100), int(y1 * frame_height / 100))
                         p2 = (int(x2 * frame_width / 100), int(y2 * frame_height / 100))
                         
-                        # Now draw the line
-                        cv2.line(annotated_frame, p1, p2, (255, 255, 255), 5)  # White border
-                        cv2.line(annotated_frame, p1, p2, (0, 0, 255), 2)      # Red line
+                        # Continue with the rest of the line drawing and crossing detection
+                        cv2.line(annotated_frame, p1, p2, (0, 0, 255), 2)
                         
-                        # Add large circles at the endpoints
-                        cv2.circle(annotated_frame, p1, 8, (255, 255, 255), -1)
-                        cv2.circle(annotated_frame, p1, 5, (0, 0, 255), -1)
-                        cv2.circle(annotated_frame, p2, 8, (255, 255, 255), -1)
-                        cv2.circle(annotated_frame, p2, 5, (0, 0, 255), -1)
-
-                        # Add percentage labels for debugging
-                        cv2.putText(annotated_frame, f"({x1}%,{y1}%)", 
-                                   (p1[0]+10, p1[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-                        cv2.putText(annotated_frame, f"({x2}%,{y2}%)", 
-                                   (p2[0]+10, p2[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-
                     except Exception as e:
                         print(f"Error processing line points: {e}")
-                        print(f"line_points data: {self.config.line_points}")
                         import traceback
                         traceback.print_exc()
                         continue
@@ -187,32 +188,67 @@ class CameraTracker:
                         
                         # Check for line crossing if we have previous position AND a line is defined
                         if self.config.line_points and len(self.config.line_points) >= 2:
-                            p1 = (int(self.config.line_points[0][0] * frame_width / 100), 
-                                  int(self.config.line_points[0][1] * frame_height / 100))
-                            p2 = (int(self.config.line_points[1][0] * frame_width / 100), 
-                                  int(self.config.line_points[1][1] * frame_height / 100))
+                            # Reuse the same point extraction logic from above
+                            point1 = self.config.line_points[0]
+                            point2 = self.config.line_points[1]
+                            
+                            # Handle all possible formats of point data
+                            if isinstance(point1, dict) and 'x' in point1 and 'y' in point1:
+                                x1, y1 = float(point1['x']), float(point1['y'])
+                                x2, y2 = float(point2['x']), float(point2['y'])
+                            elif hasattr(point1, 'x') and hasattr(point1, 'y'):
+                                # Handle Point objects
+                                x1, y1 = float(point1.x), float(point1.y)
+                                x2, y2 = float(point2.x), float(point2.y)
+                            else:
+                                # Try tuple unpacking as a fallback
+                                try:
+                                    x1, y1 = point1
+                                    x2, y2 = point2
+                                except (TypeError, ValueError):
+                                    # Skip this iteration if points have invalid format
+                                    continue
+                            
+                            # Convert to pixel coordinates
+                            p1 = (int(x1 * frame_width / 100), int(y1 * frame_height / 100))
+                            p2 = (int(x2 * frame_width / 100), int(y2 * frame_height / 100))
                             
                             prev_pos = self.last_positions.get(str_id)
-                            if prev_pos and str_id not in self.counted_ids:
+                            if prev_pos:  # Remove the str_id not in self.counted_ids condition
                                 # Determine which side of the line the points are on
                                 side_before = self._get_side(p1, p2, prev_pos)
                                 side_after = self._get_side(p1, p2, center)
                                 
                                 # Only count valid crossings (not just touches)
                                 if side_before != 0 and side_after != 0 and side_before != side_after:
+                                    # Track which direction this ID has crossed before
+                                    direction_key = f"{str_id}_direction"
+                                    current_direction = None
+                                    
                                     # Make crossing highly visible with thicker arrows
                                     if side_before < 0 and side_after > 0:
-                                        cv2.arrowedLine(annotated_frame, prev_pos, center, (0, 255, 0), 4)
-                                        with self.lock:
-                                            self.stats.people_in += 1
-                                        print(f"Person {str_id} entered at position {center}")
+                                        current_direction = "in"
+                                        # Only count if this ID hasn't entered before or last exited
+                                        last_direction = getattr(self, direction_key, None)
+                                        if last_direction != "in":
+                                            cv2.arrowedLine(annotated_frame, prev_pos, center, (0, 255, 0), 4)
+                                            with self.lock:
+                                                self.stats.people_in += 1
+                                            print(f"Person {str_id} entered at position {center}")
+                                            
                                     elif side_before > 0 and side_after < 0:
-                                        cv2.arrowedLine(annotated_frame, prev_pos, center, (0, 0, 255), 4)
-                                        with self.lock:
-                                            self.stats.people_out += 1
-                                        print(f"Person {str_id} exited at position {center}")
-                                
-                                self.counted_ids.add(str_id)
+                                        current_direction = "out"
+                                        # Only count if this ID hasn't exited before or last entered
+                                        last_direction = getattr(self, direction_key, None)
+                                        if last_direction != "out":
+                                            cv2.arrowedLine(annotated_frame, prev_pos, center, (0, 0, 255), 4)
+                                            with self.lock:
+                                                self.stats.people_out += 1
+                                            print(f"Person {str_id} exited at position {center}")
+                                    
+                                    # Remember last crossing direction for this ID
+                                    if current_direction:
+                                        setattr(self, direction_key, current_direction)
                         
                         # Update position for next frame
                         self.last_positions[str_id] = center
@@ -232,8 +268,17 @@ class CameraTracker:
                     self.stats.last_updated = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
                 
                 # Clean up tracking for IDs no longer in the frame
-                # BUT keep the counted_ids to avoid double counting
-                self.last_positions = {k: v for k, v in self.last_positions.items() if k in current_ids}
+                ids_to_remove = set(self.last_positions.keys()) - current_ids
+                if ids_to_remove:
+                    # Clean up tracking data for IDs that have left the frame
+                    for old_id in ids_to_remove:
+                        # Remove from last_positions
+                        self.last_positions.pop(old_id, None)
+                        
+                        # Clean up direction tracking attributes
+                        direction_key = f"{old_id}_direction"
+                        if hasattr(self, direction_key):
+                            delattr(self, direction_key)
                 
             except Empty:
                 # Queue timeout, just continue to check is_running
@@ -248,10 +293,43 @@ class CameraTracker:
 
     def _get_side(self, p1, p2, point):
         """Determine which side of a line a point is on."""
-        val = (p2[0] - p1[0]) * (point[1] - p1[1]) - (p2[1] - p1[1]) * (point[0] - p1[0])
-        if val > 0: return 1
-        if val < 0: return -1
-        return 0
+        try:
+            # Extract coordinates safely, handling any object type
+            # For p1
+            if hasattr(p1, 'x') and hasattr(p1, 'y'):
+                x1, y1 = float(p1.x), float(p1.y)
+            elif isinstance(p1, (tuple, list)) and len(p1) >= 2:
+                x1, y1 = float(p1[0]), float(p1[1])
+            else:
+                print(f"Warning: Invalid point format for p1: {type(p1)}")
+                return 0
+                
+            # For p2
+            if hasattr(p2, 'x') and hasattr(p2, 'y'):
+                x2, y2 = float(p2.x), float(p2.y)
+            elif isinstance(p2, (tuple, list)) and len(p2) >= 2:
+                x2, y2 = float(p2[0]), float(p2[1])
+            else:
+                print(f"Warning: Invalid point format for p2: {type(p2)}")
+                return 0
+                
+            # For point
+            if hasattr(point, 'x') and hasattr(point, 'y'):
+                px, py = float(point.x), float(point.y)
+            elif isinstance(point, (tuple, list)) and len(point) >= 2:
+                px, py = float(point[0]), float(point[1])
+            else:
+                print(f"Warning: Invalid point format for point: {type(point)}")
+                return 0
+            
+            # Calculate which side
+            val = (x2 - x1) * (py - y1) - (y2 - y1) * (px - x1)
+            if val > 0: return 1
+            if val < 0: return -1
+            return 0
+        except Exception as e:
+            print(f"Error calculating side: {e}")
+            return 0
     
     def get_stats(self) -> TrackingStats:
         """Get current tracking statistics."""
@@ -266,6 +344,11 @@ class CameraTracker:
             ret, buffer = cv2.imencode('.jpg', frame_to_return)
             return buffer.tobytes() if ret else None
     
+    def get_raw_frame(self, annotated: bool = True):
+        """Get the latest raw frame without compression."""
+        with self.lock:
+            return self.annotated_frame if annotated else self.last_frame
+
     def update_config(self, new_config: CameraConfig):
         """Update the tracker's configuration."""
         with self.lock:
@@ -278,13 +361,53 @@ class CameraTracker:
 class CameraManager:
     """Manages multiple camera trackers"""
     
-    def __init__(self, model_path: str = 'yolov8n.pt', config_file: str = 'cameras.json'):
-        self.model = YOLO(model_path)
+    def __init__(self, model_path: str = 'yolov8n.pt', config_file: str = 'cameras.json', device: str = 'auto'):
+        # Import torch at the top level
+        import torch
+        
+        # Print CUDA information
+        print(f"CUDA is available: {torch.cuda.is_available()}")
+        if torch.cuda.is_available():
+            print(f"CUDA device count: {torch.cuda.device_count()}")
+            print(f"Current CUDA device: {torch.cuda.current_device()}")
+            print(f"Device name: {torch.cuda.get_device_name(0)}")
+        
+        # Force CUDA if available, with more specific device name
+        if device == 'auto':
+            self.device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+        else:
+            self.device = device
+        
+        print(f"Selected device: {self.device}")
+        
+        # Load YOLO model with explicit device
+        try:
+            # Try different loading methods
+            print(f"Loading model on {self.device}...")
+            if self.device != 'cpu':
+                # Method 1: Load directly to CUDA
+                self.model = YOLO(model_path).cuda()
+                
+                # Verify model is on CUDA
+                dummy = torch.zeros(1, 3, 640, 640).cuda()
+                _ = self.model(dummy) # Run inference to verify
+                
+                print(f"Model device after loading: {next(self.model.parameters()).device}")
+            else:
+                self.model = YOLO(model_path)
+        except Exception as e:
+            print(f"Error loading model on GPU: {e}")
+            print("Falling back to CPU")
+            self.device = 'cpu'
+            self.model = YOLO(model_path)
+        
         self.config_file = config_file
         self.trackers: Dict[str, CameraTracker] = {}
-        # Use a Re-entrant Lock to prevent deadlocks
         self.lock = threading.RLock()
         self._load_config()
+        
+        # Log which device is being used
+        print(f"YOLO model loaded on device: {self.model.device}")
 
     def _load_config(self):
         """Load camera configurations from file."""
@@ -331,20 +454,24 @@ class CameraManager:
                 return True
             return False
     
-    def update_camera(self, camera_id: str, camera_update: CameraConfig) -> Optional[CameraConfig]:
-        """Update a camera's configuration."""
-        with self.lock:
-            if camera_id not in self.trackers:
-                return None
-            
-            # Get the tracker instance
-            tracker = self.trackers[camera_id]
-            
-            # CRITICAL: Update the tracker's config
-            tracker.update_config(camera_update)
-            
-            self.save_config()
-            return tracker.config
+    def update_camera(self, camera_id: str, camera_config: CameraConfig) -> Optional[CameraConfig]:
+        """Update an existing camera configuration."""
+        if camera_id not in self.trackers:
+            return None
+        
+        old_config = self.trackers[camera_id].config
+        print(f"Updating camera {camera_id} configuration")
+        
+        # Check if enabled status is changing
+        if old_config.enabled != camera_config.enabled:
+            print(f"Camera {camera_id} enabled status changing from {old_config.enabled} to {camera_config.enabled}")
+            # You could add additional logic here if needed
+        
+        # Update the tracker's config
+        self.trackers[camera_id].config = camera_config
+        self.save_config()  # FIX: Changed from self._save_config() to self.save_config()
+        
+        return camera_config
     
     def get_camera(self, camera_id: str) -> Optional[CameraConfig]:
         """Get a camera configuration by ID."""
@@ -375,6 +502,13 @@ class CameraManager:
         if camera_id in self.trackers:
             return self.trackers[camera_id].get_frame(annotated)
         return None
+
+    def get_raw_frame(self, camera_id: str, annotated: bool = True):
+        """Get the raw frame without JPEG compression for further processing."""
+        if camera_id not in self.trackers:
+            return None
+            
+        return self.trackers[camera_id].get_raw_frame(annotated)
 
     def shutdown(self):
         """Gracefully stop all camera trackers."""
