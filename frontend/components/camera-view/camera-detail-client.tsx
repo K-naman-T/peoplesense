@@ -3,47 +3,39 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
+import { StreamView } from '@/components/camera-view/stream-view';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { CameraConfig, TrackingStats } from '@/types';
 import statsApi from '@/lib/api-client/stats';
-import { StreamView } from '@/components/camera-view/stream-view';
 
 interface CameraDetailClientProps {
   initialCamera: CameraConfig;
-  initialStats: TrackingStats;
+  initialStats: TrackingStats | null;
 }
 
 export function CameraDetailClient({ initialCamera, initialStats }: CameraDetailClientProps) {
-  const [camera, setCamera] = useState(initialCamera);
-  const [stats, setStats] = useState(initialStats || {});
-  const [refreshInterval, setRefreshInterval] = useState<NodeJS.Timer | null>(null);
+  const [camera] = useState<CameraConfig>(initialCamera);
+  const [stats, setStats] = useState<TrackingStats | null>(initialStats);
 
-  // Set up polling for statistics updates
+  // Set up interval to refresh stats on the client
   useEffect(() => {
-    // Get initial stats
-    statsApi.getCameraStats(camera.camera_id).then(newStats => {
-      if (newStats) setStats(newStats);
-    });
-
-    // Set up polling
-    const interval = setInterval(() => {
-      statsApi.getCameraStats(camera.camera_id).then(newStats => {
-        if (newStats) setStats(newStats);
-      });
-    }, 2000); // Update every 2 seconds
-
-    setRefreshInterval(interval);
+    const intervalId = setInterval(async () => {
+      try {
+        const statsData = await statsApi.getCameraStats(camera.camera_id);
+        setStats(statsData);
+      } catch (err) {
+        console.error('Error refreshing stats:', err);
+      }
+    }, 5000); // Refresh every 5 seconds
     
-    return () => {
-      if (refreshInterval) clearInterval(refreshInterval);
-    };
+    return () => clearInterval(intervalId);
   }, [camera.camera_id]);
 
   return (
-    <div>
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="text-2xl font-bold">{camera.name}</h1>
+    <div className="grid gap-8">
+      <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] items-center gap-4">
+        <h1 className="text-3xl font-bold tracking-tight">{camera.name || `Camera ${camera.camera_id}`}</h1>
         <div className="grid grid-cols-2 gap-2">
           <Button variant="outline" asChild>
             <Link href={`/cameras/${camera.camera_id}/edit`}>Configure</Link>
@@ -62,76 +54,51 @@ export function CameraDetailClient({ initialCamera, initialStats }: CameraDetail
         <TabsContent value="live" className="mt-4">
           <div className="grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-8">
             <div>
-              {/* Stream view with the camera feed */}
               <StreamView camera={camera} />
-              
-              {/* Line info - show information about the counting line */}
-              {camera.line_points && camera.line_points.length === 2 ? (
-                <Card className="mt-4">
-                  <CardContent className="pt-4">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="text-sm font-medium">Counting Line Configured</p>
-                        <p className="text-xs text-muted-foreground">
-                          Points: ({camera.line_points[0].x}%, {camera.line_points[0].y}%) to ({camera.line_points[1].x}%, {camera.line_points[1].y}%)
-                        </p>
-                      </div>
-                      <Button variant="outline" asChild size="sm">
-                        <Link href={`/cameras/${camera.camera_id}/edit`}>Edit Line</Link>
-                      </Button>
-                    </div>
-                  </CardContent>
-                </Card>
-              ) : (
-                <Card className="mt-4 border-dashed">
-                  <CardContent className="pt-4">
-                    <div className="flex items-center justify-between">
-                      <p className="text-sm text-muted-foreground">No counting line configured</p>
-                      <Button variant="outline" asChild size="sm">
-                        <Link href={`/cameras/${camera.camera_id}/edit`}>Set Up Line</Link>
-                      </Button>
-                    </div>
-                  </CardContent>
-                </Card>
-              )}
             </div>
-            
             <div>
               <Card>
                 <CardHeader>
-                  <CardTitle>Current Stats</CardTitle>
+                  <CardTitle>Current Statistics</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <dl className="grid grid-cols-1 gap-4">
-                    <div className="p-4 bg-primary/10 rounded-lg">
-                      <dt className="text-sm font-medium text-muted-foreground">People In</dt>
-                      <dd className="text-3xl font-bold">{stats.people_in || 0}</dd>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <p className="text-sm text-muted-foreground">People In</p>
+                      <p className="text-2xl font-bold">{stats?.people_in || 0}</p>
                     </div>
-                    <div className="p-4 bg-primary/10 rounded-lg">
-                      <dt className="text-sm font-medium text-muted-foreground">People Out</dt>
-                      <dd className="text-3xl font-bold">{stats.people_out || 0}</dd>
+                    <div>
+                      <p className="text-sm text-muted-foreground">People Out</p>
+                      <p className="text-2xl font-bold">{stats?.people_out || 0}</p>
                     </div>
-                    <div className="p-4 bg-primary/10 rounded-lg">
-                      <dt className="text-sm font-medium text-muted-foreground">Current Count</dt>
-                      <dd className="text-3xl font-bold">{stats.current_count || 0}</dd>
+                    <div>
+                      <p className="text-sm text-muted-foreground">Currently In Frame</p>
+                      <p className="text-2xl font-bold">{stats?.current_count || 0}</p>
                     </div>
-                    <div className="p-4 bg-muted rounded-lg">
-                      <dt className="text-sm font-medium text-muted-foreground">Last Updated</dt>
-                      <dd className="text-sm">{stats.last_updated || 'Never'}</dd>
+                    <div>
+                      <p className="text-sm text-muted-foreground">Total Tracked</p>
+                      <p className="text-2xl font-bold">{stats?.total_tracked || 0}</p>
                     </div>
-                  </dl>
+                  </div>
+                  {stats && stats.last_updated && (
+                    <div className="mt-4 text-xs text-muted-foreground">
+                      Last updated: {new Date(stats.last_updated).toLocaleString()}
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             </div>
           </div>
         </TabsContent>
-        <TabsContent value="stats">
-          {/* Add your statistics visualizations here */}
+        <TabsContent value="stats" className="mt-4">
           <Card>
-            <CardContent className="pt-6">
-              <h3 className="text-lg font-medium mb-4">Detailed Statistics</h3>
-              {/* You could add charts or more detailed statistics here */}
-              <p className="text-muted-foreground">Detailed statistics coming soon...</p>
+            <CardHeader>
+              <CardTitle>Historical Statistics</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-muted-foreground text-sm">
+                Historical statistics visualization is not yet implemented.
+              </p>
             </CardContent>
           </Card>
         </TabsContent>

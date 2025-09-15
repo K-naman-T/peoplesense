@@ -1,29 +1,41 @@
-import cv2
-import time
-import json
 import threading
-import numpy as np
-from uuid import uuid4
+import time
+import cv2
+import traceback  # Add this import
+from queue import Queue, Empty
 from typing import Dict, List, Tuple, Optional, Union
 from ultralytics import YOLO
-from queue import Queue, Empty
-
+import numpy as np
+import json
 from app.models import CameraConfig, TrackingStats, Point
+from app.gpu_processor import BatchProcessor  # Import BatchProcessor
 
 # --- CameraTracker Class ---
 class CameraTracker:
     """Handles tracking for a single camera"""
     
-    def __init__(self, camera_config: CameraConfig, model: YOLO):
+    def __init__(self, camera_config: CameraConfig, batch_processor=None, model=None, device=None):
         self.config = camera_config
-        self.model = model
-        self.device = model.device  # Get the device from the model
+        self.batch_processor = batch_processor
+        self.model = model  # Add model parameter
+        self.device = device  # Add device parameter
         self.is_running = False
         self.processing_thread = None
-        self.reader_thread = None # Thread for reading frames
-        self.frame_queue = Queue(maxsize=2) # Use a queue to hold frames
+        self.reader_thread = None
+        self.result_thread = None
+        self.frame_queue = Queue(maxsize=2)
+        self.result_queue = None
+        if batch_processor:
+            self.result_queue = batch_processor.register_camera(self.config.camera_id)
         self.lock = threading.Lock()
-
+        
+        # Add timestamps for metrics
+        self.last_frame_time = 0
+        self.last_processed_time = 0
+        self.fps = 0
+        self.processing_latency = 0
+        self.frames_processed = 0
+        
         # State
         self.last_frame: Optional[np.ndarray] = None
         self.annotated_frame: Optional[np.ndarray] = None
@@ -33,16 +45,37 @@ class CameraTracker:
 
     def start(self):
         """Start the tracking and reading threads"""
-        # Only check if already running
         if self.is_running:
             return
         self.is_running = True
+        
         # Start the frame reader thread
-        self.reader_thread = threading.Thread(target=self._frame_reader_loop, daemon=True)
+        self.reader_thread = threading.Thread(
+            target=self._frame_reader_loop, 
+            name=f"reader-{self.config.name}",
+            daemon=True
+        )
         self.reader_thread.start()
-        # Start the main processing thread
-        self.processing_thread = threading.Thread(target=self._tracking_loop, daemon=True)
-        self.processing_thread.start()
+        
+        # Choose the appropriate processing mode
+        if self.batch_processor and self.result_queue:
+            # Batch processing mode
+            self.result_thread = threading.Thread(
+                target=self._result_processing_loop, 
+                name=f"results-{self.config.name}",
+                daemon=True
+            )
+            self.result_thread.start()
+            print(f"Started batch processing mode for camera {self.config.name}")
+        else:
+            # Direct processing mode
+            self.processing_thread = threading.Thread(
+                target=self._tracking_loop, 
+                name=f"tracking-{self.config.name}",
+                daemon=True
+            )
+            self.processing_thread.start()
+            print(f"Started direct processing mode for camera {self.config.name}")
             
     def stop(self):
         """Stop the tracking threads"""
@@ -52,13 +85,17 @@ class CameraTracker:
             self.reader_thread.join(timeout=2)
         if self.processing_thread:
             self.processing_thread.join(timeout=2)
+        if self.result_thread:
+            self.result_thread.join(timeout=2)
 
     def _frame_reader_loop(self):
         """Dedicated loop to read frames from the camera and put them in a queue."""
         cap = None
+        connection_attempts = 0
+        
         while self.is_running:
             try:
-                # Skip processing if camera is disabled - ADD THIS CHECK
+                # Skip processing if camera is disabled
                 if not self.config.enabled:
                     # Release capture if camera is disabled
                     if cap and cap.isOpened():
@@ -67,45 +104,80 @@ class CameraTracker:
                     time.sleep(1)  # Sleep to avoid CPU spinning
                     continue
                 
-                # Robust reconnection logic
+                # Initialize or reconnect camera if needed
                 if cap is None or not cap.isOpened():
-                    print(f"Attempting to connect to camera: {self.config.name}")
-                    cap = cv2.VideoCapture(self.config.stream_url)
+                    connection_attempts += 1
+                    print(f"Connecting to camera {self.config.name} ({self.config.camera_id}), attempt {connection_attempts}")
+                    
+                    # Fix URL encoding for RTSP with @ in password
+                    stream_url = self.config.stream_url
+                    if '@' in stream_url and ':' in stream_url:
+                        try:
+                            # Parse URL components
+                            parts = stream_url.split('://')
+                            if len(parts) == 2:
+                                protocol = parts[0]
+                                rest = parts[1]
+                                if '@' in rest:
+                                    credentials, host = rest.split('@', 1)
+                                    if ':' in credentials:
+                                        username, password = credentials.split(':', 1)
+                                        import urllib.parse
+                                        encoded_password = urllib.parse.quote(password)
+                                        stream_url = f"{protocol}://{username}:{encoded_password}@{host}"
+                                        print(f"Fixed URL encoding for {self.config.name}")
+                        except Exception as e:
+                            print(f"URL parsing error: {e}")
+                    
+                    cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
                     if not cap.isOpened():
-                        print(f"Error: Could not open stream for {self.config.name}. Retrying in 5 seconds...")
+                        print(f"Failed to connect to camera {self.config.name}")
                         time.sleep(5)
-                        continue # Go to the start of the loop and try again
-
-                if self.frame_queue.full():
-                    time.sleep(0.01)
-                    continue
-
-                grabbed = cap.grab()
-                if not grabbed:
-                    print(f"Warning: No frame grabbed from {self.config.name}. Reconnecting...")
+                        continue
+                    else:
+                        print(f"Successfully connected to camera {self.config.name} ({self.config.camera_id})")
+                        connection_attempts = 0
+                
+                # Read frame
+                ret, frame = cap.read()
+                if not ret:
+                    print(f"Failed to read frame from {self.config.name}")
                     cap.release()
-                    cap = None # Signal to reconnect on the next loop iteration
+                    cap = None
                     time.sleep(2)
                     continue
                 
-                ret, frame = cap.retrieve()
-                if ret:
-                    self.frame_queue.put(frame)
-
+                # IMPORTANT: Store the raw frame immediately
+                with self.lock:
+                    self.last_frame = frame.copy()
+                    # REMOVED: Verbose "Frame captured" log message
+            
+                # Add to processing queue if not full
+                try:
+                    if not self.frame_queue.full():
+                        self.frame_queue.put(frame, block=False)
+                    else:
+                        # If queue is full, skip this frame
+                        pass
+                except Exception as e:
+                    print(f"Error adding frame to queue: {e}")
+                
             except Exception as e:
                 print(f"Error in frame reader for {self.config.name}: {e}")
+                import traceback
+                traceback.print_exc()
                 if cap:
                     cap.release()
                 cap = None
-                time.sleep(5) # Wait before trying to recover from the exception
-        
-        if cap:
+                time.sleep(5)
+            
+        # Cleanup on exit
+        if cap and cap.isOpened():
             cap.release()
-        print(f"Frame reader stopped for {self.config.name}")
-
+    
     def _tracking_loop(self):
         """The main loop for video processing, consuming from the queue."""
-        print(f"Tracking loop started for {self.config.name} on {self.device}")
+        print(f"Tracking loop started for {self.config.name}")
         
         # Initialize tracking structures
         self.last_positions = {}
@@ -113,13 +185,20 @@ class CameraTracker:
         
         while self.is_running:
             try:
-                # Skip processing if camera is disabled - ADD THIS CHECK
+                # Skip processing if camera is disabled
                 if not self.config.enabled:
                     time.sleep(0.5)  # Sleep to avoid CPU spinning
                     continue
                 
                 # Get a frame from the queue with a timeout
-                frame = self.frame_queue.get(timeout=1.0)
+                try:
+                    frame = self.frame_queue.get(timeout=1.0)
+                except Empty:
+                    continue
+                    
+                # Store the raw frame immediately - ADD THIS LINE
+                with self.lock:
+                    self.last_frame = frame.copy()
                 
                 # Process the frame with YOLO
                 results = self.model.track(frame, persist=True, classes=[0], verbose=False)
@@ -280,14 +359,202 @@ class CameraTracker:
                         if hasattr(self, direction_key):
                             delattr(self, direction_key)
                 
-            except Empty:
-                # Queue timeout, just continue to check is_running
-                continue
             except Exception as e:
                 print(f"Error in tracking loop for {self.config.name}: {e}")
-                import traceback
-                traceback.print_exc()
-                time.sleep(1)  # Prevent rapid-fire errors
+                traceback.print_exc()  # Add this for better error info
+                time.sleep(0.5)
+        
+        print(f"Tracking loop stopped for {self.config.name}")
+
+    def _result_processing_loop(self):
+        """Process results coming from the batch processor"""
+        print(f"Result processing loop started for {self.config.name}")
+        
+        while self.is_running:
+            try:
+                # Skip if camera disabled
+                if not self.config.enabled:
+                    time.sleep(0.5)
+                    continue
+                
+                # Get results with timeout
+                try:
+                    result, frame, timestamp = self.result_queue.get(timeout=1.0)
+                except Empty:
+                    # This is expected behavior when no results are available
+                    continue
+                
+                # Calculate processing latency
+                latency = time.time() - timestamp
+                with self.lock:
+                    self.processing_latency = latency
+                    self.frames_processed += 1
+                    if self.last_processed_time > 0:
+                        time_diff = time.time() - self.last_processed_time
+                        if time_diff > 0:
+                            self.fps = 0.8 * self.fps + 0.2 * (1.0 / time_diff)  # Smooth FPS calculation
+                    self.last_processed_time = time.time()
+                
+                # Process the result just like in _tracking_loop
+                # This is similar to your existing _tracking_loop but without the model.track() call
+                annotated_frame = frame.copy()
+                frame_height, frame_width, _ = frame.shape
+                
+                # Initialize current_ids OUTSIDE the conditional blocks
+                current_ids = set()
+                
+                # Draw line REGARDLESS of person detection
+                if self.config.line_points and len(self.config.line_points) >= 2:
+                    # Add defensive unpacking to handle both formats
+                    try:
+                        # Extract points based on the actual data structure
+                        point1 = self.config.line_points[0]
+                        point2 = self.config.line_points[1]
+                        
+                        # Handle dict/object format from frontend
+                        if isinstance(point1, dict) and 'x' in point1 and 'y' in point1:
+                            x1, y1 = float(point1['x']), float(point1['y'])
+                            x2, y2 = float(point2['x']), float(point2['y'])
+                        elif hasattr(point1, 'x') and hasattr(point1, 'y'):
+                            # Handle Pydantic model objects
+                            x1, y1 = float(point1.x), float(point1.y)
+                            x2, y2 = float(point2.x), float(point2.y)
+                        else:
+                            # Try tuple unpacking as a fallback
+                            try:
+                                x1, y1 = point1
+                                x2, y2 = point2
+                            except (TypeError, ValueError):
+                                print(f"Warning: Unsupported line_points format: {self.config.line_points}")
+                                continue
+                            
+                        # Now convert coordinates safely with extracted numeric values
+                        p1 = (int(x1 * frame_width / 100), int(y1 * frame_height / 100))
+                        p2 = (int(x2 * frame_width / 100), int(y2 * frame_height / 100))
+                        
+                        # Continue with the rest of the line drawing and crossing detection
+                        cv2.line(annotated_frame, p1, p2, (0, 0, 255), 2)
+                        
+                    except Exception as e:
+                        print(f"Error processing line points: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        continue
+
+                # Extract person detections from result
+                boxes = result.boxes.xyxy.cpu().numpy().astype(int)
+                ids = result.boxes.id.cpu().numpy().astype(int)
+                
+                # Process each detected person
+                for box, obj_id in zip(boxes, ids):
+                    x1_box, y1_box, x2_box, y2_box = box
+                    center = ((x1_box + x2_box) // 2, (y1_box + y2_box) // 2)
+                    str_id = str(obj_id)
+                    current_ids.add(str_id)
+                    
+                    # Draw bounding box
+                    cv2.rectangle(annotated_frame, (x1_box, y1_box), (x2_box, y2_box), (0, 255, 0), 2)
+                    cv2.putText(annotated_frame, f"ID: {str_id}", (x1_box, y1_box - 10), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                    
+                    # Check for line crossing if we have previous position AND a line is defined
+                    if self.config.line_points and len(self.config.line_points) >= 2:
+                        # Reuse the same point extraction logic from above
+                        point1 = self.config.line_points[0]
+                        point2 = self.config.line_points[1]
+                        
+                        # Handle all possible formats of point data
+                        if isinstance(point1, dict) and 'x' in point1 and 'y' in point1:
+                            x1, y1 = float(point1['x']), float(point1['y'])
+                            x2, y2 = float(point2['x']), float(point2['y'])
+                        elif hasattr(point1, 'x') and hasattr(point1, 'y'):
+                            # Handle Point objects
+                            x1, y1 = float(point1.x), float(point1.y)
+                            x2, y2 = float(point2.x), float(point2.y)
+                        else:
+                            # Try tuple unpacking as a fallback
+                            try:
+                                x1, y1 = point1
+                                x2, y2 = point2
+                            except (TypeError, ValueError):
+                                # Skip this iteration if points have invalid format
+                                continue
+                        
+                        # Convert to pixel coordinates
+                        p1 = (int(x1 * frame_width / 100), int(y1 * frame_height / 100))
+                        p2 = (int(x2 * frame_width / 100), int(y2 * frame_height / 100))
+                        
+                        prev_pos = self.last_positions.get(str_id)
+                        if prev_pos:  # Remove the str_id not in self.counted_ids condition
+                            # Determine which side of the line the points are on
+                            side_before = self._get_side(p1, p2, prev_pos)
+                            side_after = self._get_side(p1, p2, center)
+                            
+                            # Only count valid crossings (not just touches)
+                            if side_before != 0 and side_after != 0 and side_before != side_after:
+                                # Track which direction this ID has crossed before
+                                direction_key = f"{str_id}_direction"
+                                current_direction = None
+                                
+                                # Make crossing highly visible with thicker arrows
+                                if side_before < 0 and side_after > 0:
+                                    current_direction = "in"
+                                    # Only count if this ID hasn't entered before or last exited
+                                    last_direction = getattr(self, direction_key, None)
+                                    if last_direction != "in":
+                                        cv2.arrowedLine(annotated_frame, prev_pos, center, (0, 255, 0), 4)
+                                        with self.lock:
+                                            self.stats.people_in += 1
+                                        print(f"Person {str_id} entered at position {center}")
+                                        
+                                elif side_before > 0 and side_after < 0:
+                                    current_direction = "out"
+                                    # Only count if this ID hasn't exited before or last entered
+                                    last_direction = getattr(self, direction_key, None)
+                                    if last_direction != "out":
+                                        cv2.arrowedLine(annotated_frame, prev_pos, center, (0, 0, 255), 4)
+                                        with self.lock:
+                                            self.stats.people_out += 1
+                                        print(f"Person {str_id} exited at position {center}")
+                                
+                                # Remember last crossing direction for this ID
+                                if current_direction:
+                                    setattr(self, direction_key, current_direction)
+                    
+                    # Update position for next frame
+                    self.last_positions[str_id] = center
+                
+                # Add stats overlay to frame
+                cv2.putText(annotated_frame, f"In: {self.stats.people_in}", (10, 30), 
+                          cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                cv2.putText(annotated_frame, f"Out: {self.stats.people_out}", (10, 70), 
+                          cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                
+                # Update frames and stats with lock protection
+                with self.lock:
+                    self.last_frame = frame
+                    self.annotated_frame = annotated_frame
+                    self.stats.current_count = len(current_ids)
+                    self.stats.total_tracked = max(self.stats.total_tracked, len(self.last_positions))
+                    self.stats.last_updated = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                
+                # Clean up tracking for IDs no longer in the frame
+                ids_to_remove = set(self.last_positions.keys()) - current_ids
+                if ids_to_remove:
+                    # Clean up tracking data for IDs that have left the frame
+                    for old_id in ids_to_remove:
+                        # Remove from last_positions
+                        self.last_positions.pop(old_id, None)
+                        
+                        # Clean up direction tracking attributes
+                        direction_key = f"{old_id}_direction"
+                        if hasattr(self, direction_key):
+                            delattr(self, direction_key)
+                
+            except Exception as e:
+                print(f"Error in tracking loop for {self.config.name}: {e}")
+                traceback.print_exc()  # Add this for better error info
+                time.sleep(0.5)
         
         print(f"Tracking loop stopped for {self.config.name}")
 
@@ -404,6 +671,23 @@ class CameraManager:
         self.config_file = config_file
         self.trackers: Dict[str, CameraTracker] = {}
         self.lock = threading.RLock()
+        
+        # Create batch processor
+        self.batch_processor = None
+        if 'cuda' in self.device:
+            try:
+                # Create batch processor with appropriate batch size
+                # Batch size depends on GPU memory - adjust as needed
+                batch_size = 4  # Start conservative
+                if torch.cuda.get_device_properties(0).total_memory > 8e9:  # >8GB VRAM
+                    batch_size = 8
+                
+                self.batch_processor = BatchProcessor(self.model, batch_size=batch_size)
+                self.batch_processor.start()
+                print(f"Batch processor created with batch size {batch_size}")
+            except Exception as e:
+                print(f"Failed to create batch processor: {e}")
+        
         self._load_config()
         
         # Log which device is being used
@@ -431,15 +715,19 @@ class CameraManager:
 
     def add_camera(self, config: CameraConfig, save_to_file: bool = True) -> CameraConfig:
         """Add a new camera and start its tracking."""
-        # Create the tracker instance first
-        tracker = CameraTracker(config, self.model)
-
-        with self.lock:
-            # Add the tracker to the dictionary
-            self.trackers[config.camera_id] = tracker
-            if save_to_file: self.save_config()
+        # Create the tracker with the batch processor if available
+        if self.batch_processor:
+            tracker = CameraTracker(config, self.batch_processor)
+        else:
+            # Pass model and device when not using batch processor
+            tracker = CameraTracker(config, None, self.model, self.device)
         
-        # Start the tracker's threads AFTER adding it and releasing the lock
+        with self.lock:
+            self.trackers[config.camera_id] = tracker
+            if save_to_file: 
+                self.save_config()
+    
+        # Start the tracker
         tracker.start()
             
         return config
@@ -511,9 +799,15 @@ class CameraManager:
         return self.trackers[camera_id].get_raw_frame(annotated)
 
     def shutdown(self):
-        """Gracefully stop all camera trackers."""
+        """Gracefully stop all camera trackers and the batch processor."""
         print("Shutting down all camera trackers...")
         with self.lock:
             for tracker in self.trackers.values():
                 tracker.stop()
-        print("All trackers have been signaled to stop.")
+        
+        # Stop batch processor if it exists
+        if self.batch_processor:
+            print("Shutting down batch processor...")
+            self.batch_processor.stop()
+            
+        print("All components have been signaled to stop.")
