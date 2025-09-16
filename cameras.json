@@ -1,1 +1,9 @@
-{}
+{
+    "161a9151-67a6-48d7-97a0-2a73b6cbe5ac": {
+        "camera_id": "161a9151-67a6-48d7-97a0-2a73b6cbe5ac",
+        "name": "camera 1",
+        "stream_url": "0",
+        "enabled": true,
+        "line_points": null
+    }
+}
